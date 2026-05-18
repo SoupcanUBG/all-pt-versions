@@ -2,8 +2,9 @@
 
 let config = {
   speed: 4,
-  target: { minutes: 59, seconds: 59, millis: 99 },
-  stopKey: "l"
+  target: { minutes: 0, seconds: 0, millis: 0 },
+  stopKey: "l",
+  autoTime: true
 };
 
 let active = false;
@@ -13,18 +14,46 @@ let keyHandler = null;
 let rafId = null;
 
 // =========================
-// TIME CALC
+// TIMER DETECTION
 // =========================
-function computeDuration() {
-  const targetMs =
-    (config.target.minutes * 60 +
-     config.target.seconds +
-     config.target.millis / 1000) * 1000;
+function parseTimeFromPage() {
+  const text = document.body.innerText;
 
-  return {
-    targetMs,
-    durationReal: targetMs / config.speed
-  };
+  // looks for formats like:
+  // 00:03:56
+  // 3:56
+  const match = text.match(/(\d{1,2})\s*[:.]\s*(\d{1,2})(?:\s*[:.]\s*(\d{1,2}))?/);
+
+  if (!match) return null;
+
+  let m = 0, s = 0, ms = 0;
+
+  if (match[3] !== undefined) {
+    m = parseInt(match[1]);
+    s = parseInt(match[2]);
+    ms = parseInt(match[3]);
+  } else {
+    m = parseInt(match[1]);
+    s = parseInt(match[2]);
+  }
+
+  return { minutes: m, seconds: s, millis: ms };
+}
+
+// =========================
+// TIME ENGINE
+// =========================
+function computeTargetMs() {
+  return (
+    (config.target.minutes * 60 +
+      config.target.seconds +
+      config.target.millis / 1000) *
+    1000
+  );
+}
+
+function computeDurationReal() {
+  return computeTargetMs() / config.speed;
 }
 
 // =========================
@@ -35,12 +64,14 @@ function release(reason = "unknown") {
   active = false;
 
   if (holdEl) {
-    holdEl.dispatchEvent(new MouseEvent("mouseup", {
-      bubbles: true,
-      cancelable: true,
-      view: window,
-      button: 0
-    }));
+    holdEl.dispatchEvent(
+      new MouseEvent("mouseup", {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        button: 0
+      })
+    );
   }
 
   if (keyHandler) window.removeEventListener("keydown", keyHandler);
@@ -50,7 +81,7 @@ function release(reason = "unknown") {
 }
 
 // =========================
-// LOOP
+// LOOP (stable, no drift issues)
 // =========================
 function loop() {
   if (!active) return;
@@ -64,25 +95,37 @@ function loop() {
 }
 
 // =========================
-// START
+// START HOLD
 // =========================
-export function startHold(element = document.getElementById("hold")) {
+export function startHold(
+  element = document.getElementById("hold"),
+  autoTime = true
+) {
   if (!element) throw new Error("Hold element not found");
 
   holdEl = element;
+  active = true;
+
+  // auto detect time
+  if (autoTime) {
+    const detected = parseTimeFromPage();
+    if (detected) {
+      config.target = detected;
+      console.log("⏱ Auto time detected:", detected);
+    } else {
+      console.warn("⚠️ No timer detected, using default target");
+    }
+  }
 
   const rect = element.getBoundingClientRect();
   const x = rect.left + rect.width / 2;
   const y = rect.top + rect.height / 2;
 
-  const { targetMs, durationReal } = computeDuration();
-
+  const durationReal = computeDurationReal();
   endPerf = performance.now() + durationReal;
-  active = true;
 
-  console.log("⏱ Target ms:", targetMs);
   console.log("⚡ Speed:", config.speed);
-  console.log("🕒 Real duration:", durationReal);
+  console.log("🕒 Duration real:", durationReal);
 
   keyHandler = (e) => {
     if (e.key.toLowerCase() === config.stopKey) {
@@ -92,14 +135,16 @@ export function startHold(element = document.getElementById("hold")) {
 
   window.addEventListener("keydown", keyHandler);
 
-  element.dispatchEvent(new MouseEvent("mousedown", {
-    bubbles: true,
-    cancelable: true,
-    view: window,
-    clientX: x,
-    clientY: y,
-    button: 0
-  }));
+  element.dispatchEvent(
+    new MouseEvent("mousedown", {
+      bubbles: true,
+      cancelable: true,
+      view: window,
+      clientX: x,
+      clientY: y,
+      button: 0
+    })
+  );
 
   requestAnimationFrame(loop);
 }
@@ -112,31 +157,35 @@ export function stopHold(reason = "manual stop") {
 }
 
 // =========================
-// SPEED (FIXED: ACTUAL TIME RESCALE)
+// SPEED FIX (THIS IS THE IMPORTANT FIX)
 // =========================
 export function setSpeed(s) {
+  const now = performance.now();
+
   if (!active) {
     config.speed = s;
     console.log("⚡ speed set (idle):", s);
     return;
   }
 
-  const now = performance.now();
-
+  // remaining real time left
   const remainingReal = Math.max(0, endPerf - now);
+
+  // convert back to game-time using OLD speed
   const remainingGameMs = remainingReal * config.speed;
 
   config.speed = s;
 
-  endPerf = now + (remainingGameMs / config.speed);
+  // recompute end time using NEW speed
+  endPerf = now + remainingGameMs / config.speed;
 
   console.log("⚡ speed updated:", s);
 }
 
 // =========================
-// TARGET UPDATE
+// TARGET
 // =========================
-export function setTarget(m, s, ms) {
+export function setTarget(m, s, ms = 0) {
   config.target = { minutes: m, seconds: s, millis: ms };
   console.log("🎯 target updated:", config.target);
 }
@@ -150,7 +199,7 @@ export function setStopKey(k) {
 }
 
 // =========================
-// DEBUG
+// CONFIG DEBUG
 // =========================
 export function getConfig() {
   return config;
