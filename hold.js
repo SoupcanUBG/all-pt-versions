@@ -6,6 +6,15 @@ let config = {
   stopKey: "l",
   autoTime: true
 };
+export function version() {
+  return {
+    name: "hold.js",
+    version: "1.0.0",
+    speed: config.speed,
+    active,
+    autoTime: config.autoTime
+  };
+}
 
 let active = false;
 let holdEl = null;
