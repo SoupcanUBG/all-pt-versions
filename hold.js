@@ -6,15 +6,6 @@ let config = {
   stopKey: "l",
   autoTime: true
 };
-export function version() {
-  return {
-    name: "hold.js",
-    version: "1.0.0",
-    speed: config.speed,
-    active,
-    autoTime: config.autoTime
-  };
-}
 
 let active = false;
 let holdEl = null;
@@ -23,36 +14,72 @@ let keyHandler = null;
 let rafId = null;
 
 // =========================
-// TIMER DETECTION
+// UTIL: LOGGING
+// =========================
+function log(type, msg, data) {
+  const prefix = {
+    info: "ℹ️",
+    ok: "✅",
+    warn: "⚠️",
+    error: "❌"
+  }[type] || "ℹ️";
+
+  if (data !== undefined) {
+    console.log(prefix, msg, data);
+  } else {
+    console.log(prefix, msg);
+  }
+}
+
+// =========================
+// TIMER DETECTION (SAFE + STRICT)
 // =========================
 function parseTimeFromPage() {
-  const text = document.body.innerText;
+  const elements = document.querySelectorAll("body *");
 
-  // looks for formats like:
-  // 00:03:56
-  // 3:56
-  const match = text.match(/(\d{1,2})\s*[:.]\s*(\d{1,2})(?:\s*[:.]\s*(\d{1,2}))?/);
+  for (const el of elements) {
+    const text = (el.textContent || "").trim();
 
-  if (!match) return null;
+    // strict formats only:
+    // MM:SS or HH:MM:SS
+    const match = text.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
 
-  let m = 0, s = 0, ms = 0;
+    if (!match) continue;
 
-  if (match[3] !== undefined) {
-    m = parseInt(match[1]);
-    s = parseInt(match[2]);
-    ms = parseInt(match[3]);
-  } else {
-    m = parseInt(match[1]);
-    s = parseInt(match[2]);
+    const hasHours = match[3] !== undefined;
+
+    const parsed = hasHours
+      ? {
+          minutes: parseInt(match[1]),
+          seconds: parseInt(match[2]),
+          millis: parseInt(match[3])
+        }
+      : {
+          minutes: 0,
+          seconds: parseInt(match[1]),
+          millis: parseInt(match[2])
+        };
+
+    const rect = el.getBoundingClientRect();
+    const visible =
+      rect.width > 0 &&
+      rect.height > 0 &&
+      getComputedStyle(el).visibility !== "hidden";
+
+    if (visible) {
+      log("ok", "Timer detected from DOM", parsed);
+      return parsed;
+    }
   }
 
-  return { minutes: m, seconds: s, millis: ms };
+  log("warn", "No valid timer found on page");
+  return null;
 }
 
 // =========================
 // TIME ENGINE
 // =========================
-function computeTargetMs() {
+function getTargetMs() {
   return (
     (config.target.minutes * 60 +
       config.target.seconds +
@@ -61,15 +88,16 @@ function computeTargetMs() {
   );
 }
 
-function computeDurationReal() {
-  return computeTargetMs() / config.speed;
+function getDurationReal() {
+  return getTargetMs() / config.speed;
 }
 
 // =========================
 // RELEASE
 // =========================
-function release(reason = "unknown") {
+function release(reason) {
   if (!active) return;
+
   active = false;
 
   if (holdEl) {
@@ -86,11 +114,11 @@ function release(reason = "unknown") {
   if (keyHandler) window.removeEventListener("keydown", keyHandler);
   if (rafId) cancelAnimationFrame(rafId);
 
-  console.log("🛑 Released:", reason);
+  log("warn", "Released → " + reason);
 }
 
 // =========================
-// LOOP (stable, no drift issues)
+// LOOP (stable, no drift logic needed)
 // =========================
 function loop() {
   if (!active) return;
@@ -106,56 +134,72 @@ function loop() {
 // =========================
 // START HOLD
 // =========================
-export function startHold(
-  element = document.getElementById("hold"),
-  autoTime = true
-) {
-  if (!element) throw new Error("Hold element not found");
+export function startHold(element = document.getElementById("hold"), autoTime = true) {
+  try {
+    if (!element) {
+      log("error", "Hold element not found (#hold missing)");
+      return;
+    }
 
-  holdEl = element;
-  active = true;
+    holdEl = element;
+    active = true;
 
-  // auto detect time
-  if (autoTime) {
-    const detected = parseTimeFromPage();
-    if (detected) {
+    // =========================
+    // AUTO TIME DETECTION
+    // =========================
+    if (autoTime && config.autoTime) {
+      const detected = parseTimeFromPage();
+
+      if (!detected) {
+        log("error", "Auto-time failed (no valid timer found)");
+        return;
+      }
+
       config.target = detected;
-      console.log("⏱ Auto time detected:", detected);
-    } else {
-      console.warn("⚠️ No timer detected, using default target");
     }
+
+    const targetMs = getTargetMs();
+
+    if (targetMs <= 0) {
+      log("error", "Invalid timer → target is 0ms (aborting to prevent instant release)");
+      return;
+    }
+
+    const durationReal = getDurationReal();
+
+    const rect = element.getBoundingClientRect();
+    const x = rect.left + rect.width / 2;
+    const y = rect.top + rect.height / 2;
+
+    endPerf = performance.now() + durationReal;
+
+    log("info", "Target ms", targetMs);
+    log("info", "Speed", config.speed);
+    log("info", "Real duration", durationReal);
+
+    keyHandler = (e) => {
+      if (e.key.toLowerCase() === config.stopKey) {
+        release("manual key (" + config.stopKey + ")");
+      }
+    };
+
+    window.addEventListener("keydown", keyHandler);
+
+    element.dispatchEvent(
+      new MouseEvent("mousedown", {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        clientX: x,
+        clientY: y,
+        button: 0
+      })
+    );
+
+    requestAnimationFrame(loop);
+  } catch (err) {
+    log("error", "startHold crashed", err);
   }
-
-  const rect = element.getBoundingClientRect();
-  const x = rect.left + rect.width / 2;
-  const y = rect.top + rect.height / 2;
-
-  const durationReal = computeDurationReal();
-  endPerf = performance.now() + durationReal;
-
-  console.log("⚡ Speed:", config.speed);
-  console.log("🕒 Duration real:", durationReal);
-
-  keyHandler = (e) => {
-    if (e.key.toLowerCase() === config.stopKey) {
-      release("manual key");
-    }
-  };
-
-  window.addEventListener("keydown", keyHandler);
-
-  element.dispatchEvent(
-    new MouseEvent("mousedown", {
-      bubbles: true,
-      cancelable: true,
-      view: window,
-      clientX: x,
-      clientY: y,
-      button: 0
-    })
-  );
-
-  requestAnimationFrame(loop);
 }
 
 // =========================
@@ -166,37 +210,37 @@ export function stopHold(reason = "manual stop") {
 }
 
 // =========================
-// SPEED FIX (THIS IS THE IMPORTANT FIX)
+// SPEED (FIXED LIVE RESCALING)
 // =========================
-export function setSpeed(s) {
-  const now = performance.now();
-
-  if (!active) {
-    config.speed = s;
-    console.log("⚡ speed set (idle):", s);
+export function setSpeed(newSpeed) {
+  if (typeof newSpeed !== "number" || newSpeed <= 0) {
+    log("error", "Invalid speed value", newSpeed);
     return;
   }
 
-  // remaining real time left
-  const remainingReal = Math.max(0, endPerf - now);
+  const now = performance.now();
 
-  // convert back to game-time using OLD speed
+  if (!active) {
+    config.speed = newSpeed;
+    log("ok", "Speed set (idle)", newSpeed);
+    return;
+  }
+
+  const remainingReal = Math.max(0, endPerf - now);
   const remainingGameMs = remainingReal * config.speed;
 
-  config.speed = s;
-
-  // recompute end time using NEW speed
+  config.speed = newSpeed;
   endPerf = now + remainingGameMs / config.speed;
 
-  console.log("⚡ speed updated:", s);
+  log("ok", "Speed updated live", newSpeed);
 }
 
 // =========================
-// TARGET
+// TARGET SET
 // =========================
 export function setTarget(m, s, ms = 0) {
   config.target = { minutes: m, seconds: s, millis: ms };
-  console.log("🎯 target updated:", config.target);
+  log("ok", "Target updated", config.target);
 }
 
 // =========================
@@ -204,12 +248,18 @@ export function setTarget(m, s, ms = 0) {
 // =========================
 export function setStopKey(k) {
   config.stopKey = k;
-  console.log("⌨️ stop key:", k);
+  log("ok", "Stop key set", k);
 }
 
 // =========================
-// CONFIG DEBUG
+// DEBUG
 // =========================
-export function getConfig() {
-  return config;
+export function version() {
+  return {
+    name: "hold.js",
+    version: "2.0.0",
+    speed: config.speed,
+    active,
+    autoTime: config.autoTime
+  };
 }
